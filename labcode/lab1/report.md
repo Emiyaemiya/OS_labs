@@ -5,6 +5,7 @@
 ##### （1）核心操作
 
 &emsp;&emsp;`la` 是 RISC-V 汇编的“加载地址”（Load Address）指令，该指令的核心功能是：**将符号 `bootstacktop` 对应的地址，加载到栈指针寄存器 `sp` 中**。  
+
 &emsp;&emsp;结合代码中 `bootstack` 的定义（`.data` 段分配 `KSTACKSIZE` 大小的栈空间，`bootstack` 为栈的低地址“底部”，`bootstacktop` 为栈的高地址“顶部”），这条指令本质是将 `sp` 精准指向内核专属栈的“顶部”（高地址端）——而 RISC-V 栈遵循“向下生长”规则（压栈时 `sp` 向低地址移动，出栈时向高地址移动），因此 `bootstacktop` 是栈的合法起始位置。
 
 
