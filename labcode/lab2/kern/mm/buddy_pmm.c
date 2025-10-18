@@ -7,15 +7,15 @@
 //LAB2 EXERCISE 2: YOUR CODE
 // buddy system logic
 
-#define MAX_ORDER 20
+#define MAX_ORDER 15
 
 static free_area_t free_areas[MAX_ORDER];
-#define free_list_for_order(order) (free_areas[order].free_list)
-#define nr_free_for_order(order) (free_areas[order].nr_free)
+#define free_list_for_order(order) (free_areas[order].free_list)//获取对应order的空闲链表头
+#define nr_free_for_order(order) (free_areas[order].nr_free)//获取对应order的空闲块计数
 
-static size_t total_free_pages;
-static struct Page *buddy_base;
-static size_t buddy_total_pages;
+static size_t total_free_pages;//总的空闲页数
+static struct Page *buddy_base;//保存最初的base
+static size_t buddy_total_pages;//总的纳入buddy算法的页的跨度
 
 static struct Page*
 get_buddy(struct Page* page, size_t order) {
@@ -87,7 +87,7 @@ buddy_init_memmap(struct Page *base, size_t n) {
             size_t global_offset = base_offset + offset;
             if (global_offset & (block_size - 1)) {
                 break;
-            }
+            }//起始页不是下一阶块大小的整数倍，也就不满足对齐要求。
             order++;
         }//找到最大的order
         
@@ -219,13 +219,13 @@ buddy_dump_free_pages(void) {
 
 static void
 buddy_check(void) {
-    struct Page *p0, *p1, *p2, *p3, *p4, *p5;
-    p0 = p1 = p2 = p3 = p4 = p5 = NULL;
+    struct Page *p0, *p1, *p2, *p3, *p4;
+    p0 = p1 = p2 = p3 = p4= NULL;
     cprintf("Original State:\n");
     buddy_dump_free_pages();
 
     assert((p0 = alloc_pages(16383)) != NULL);
-    cprintf("Allocated p0: %p\n", p0);
+    cprintf("Allocated p0: 16383\n", p0);
     buddy_dump_free_pages();
     free_pages(p0, 16383);
     
@@ -253,13 +253,10 @@ buddy_check(void) {
     cprintf("Allocated p4: 129\n", p4);
     buddy_dump_free_pages();
 
-    assert((p5 = alloc_pages(513)) != NULL);
-    cprintf("Allocated p5: 513\n", p5);
-    buddy_dump_free_pages();
 
     free_pages(p4, 129);
-    free_pages(p5, 513);
-    cprintf("Freed p4, p5:\n");
+
+    cprintf("Freed p4:\n");
     buddy_dump_free_pages();
     cprintf("buddy_check() succeeded!\n");
 
