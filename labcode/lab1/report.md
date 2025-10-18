@@ -142,9 +142,9 @@ cpus {
 0x8020001e <kern_init+20>:   sub     a2,a2,a0
 ```
 
-&emsp;&emsp;前两条指令实际上是汇编代码中的 `la sp, bootstacktop` ，也就是加载 bootstacktop 的地址到栈指针 sp，设置了初始的栈指针。之后的一条命令则代表调用 `kern_init` 函数。且此时OpenSBI界面出现，也就是说内核正式启动。
+&emsp;&emsp;前两条指令实际上是汇编代码中的 `la sp, bootstacktop` ，也就是加载 bootstacktop 的地址到栈指针 sp，设置了初始的栈指针。且此时OpenSBI界面出现，也就是说内核正式启动。之后的一条命令则代表调用 `kern_init` 函数。
 
-&emsp;&emsp;接下来就是 `init.c` 的具体实现，整体相对“白盒”。主要是通过 `memset` 清空 `BSS` 段，确保全局变量的初始值为 0。再调用我们创造的 `cprintf` 函数，同时进入待机死循环状态。
+&emsp;&emsp;接下来就是 `init.c` 的具体实现，整体相对“白盒”。主要是通过 `memset` 清空 `BSS` 段，确保全局变量的初始值为 0。再调用我们创造的 `cprintf` 函数，接着进入待机死循环状态。
 ```c
 int kern_init(void) {
     extern char edata[], end[];
