@@ -111,19 +111,18 @@ void __cache_free(struct kmem_cache *cache, void *obj) {
 
 
         // 真实实现：加载在slabs_partial上，当内存紧张时才将其释放回物理页。                
-        // 比如：每释放10个 slab 就真正 free 一次
+
+        // unsigned threshold =5000
         
-        // static int free_slab_counter = 0;
-        // if (++free_slab_counter >= 10) {
-        //     free_slab_counter = 0;
+        // if(total_free_pages>threshold){
+        //     //将其放入 partial 链表，等未来重用
+        //     list_del(&slab->list_link);
+        //     list_add(&cache->slabs_partial, &slab->list_link);
+        // }
+        // else{
         //     list_del(&slab->list_link);
         //     free_pages(slab->page, 1);
-        //     return;
         // }
-
-        // // 否则将其放入 partial 链表，等未来重用
-        // list_del(&slab->list_link);
-        // list_add(&cache->slabs_partial, &slab->list_link);
     }
 }
 
@@ -174,15 +173,41 @@ void kfree_bytes(void *ptr) {
 void slub_check(void) {
     slub_init();
 
-    void *p1 = kmalloc_bytes(32);
-    void *p2 = kmalloc_bytes(64);
-    void *p3 = kmalloc_bytes(128);
+    // 测试1：分配3个不同大小的小对象
+    void *p1 = kmalloc_bytes(128);   // 映射到128B等级
+    void *p2 = kmalloc_bytes(128);   // 映射到128B等级
+    void *p3 = kmalloc_bytes(1024);  // 映射到1024B等级
+    void *p4 = kmalloc_bytes(1024);  // 映射到1024B等级
+    void *p5 = kmalloc_bytes(1024);  // 映射到1024B等级
+    void *p6 = kmalloc_bytes(1024);  // 映射到1024B等级
 
-    cprintf("p1=%p, p2=%p, p3=%p\n", p1, p2, p3);
+    // 验证分配成功（地址非空）
+    cprintf("p1=%p, p2=%p, p3=%p,p4=%p, p5=%p, p6=%p\n",p1, p2, p3, p4, p5, p6);
+    assert(p1 != NULL && p2 != NULL && p3 != NULL && p4 != NULL && p5 != NULL && p6 != NULL);
+
+    // 测试2：释放对象
+    kfree_bytes(p3);
+
+    p3 = kmalloc_bytes(128);   // 映射到128B等级
+
+    // 验证分配成功（地址非空）
+    cprintf("p1=%p, p2=%p, p3=%p,p4=%p, p5=%p, p6=%p\n",p1, p2, p3, p4, p5, p6);
+    assert(p1 != NULL && p2 != NULL && p3 != NULL && p4 != NULL && p5 != NULL && p6 != NULL);
+
+    kfree_bytes(p3);
+
+    p3 = kmalloc_bytes(1024);   // 映射到1024B等级
+
+    cprintf("p1=%p, p2=%p, p3=%p,p4=%p, p5=%p, p6=%p\n", p1, p2, p3, p4, p5, p6);
+    assert(p1 != NULL && p2 != NULL && p3 != NULL && p4 != NULL && p5 != NULL && p6 != NULL);
 
     kfree_bytes(p1);
     kfree_bytes(p2);
     kfree_bytes(p3);
+    kfree_bytes(p4);
+    kfree_bytes(p5);
+    kfree_bytes(p6);
 
     cprintf("SLUB-only test done.\n");
 }
+
