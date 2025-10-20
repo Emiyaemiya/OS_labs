@@ -30,17 +30,13 @@ DTB init completed
 (THU.CST) os is loading ...
 Special kernel symbols:
   entry  0xffffffffc02000d8 (virtual)
-  etext  0xffffffffc0201b4c (virtual)
-  edata  0xffffffffc0206018 (virtual)
-  end    0xffffffffc0206238 (virtual)
-Kernel executable memory footprint: 25KB
+  etext  0xffffffffc0201660 (virtual)
+  edata  0xffffffffc0205018 (virtual)
+  end    0xffffffffc0205078 (virtual)
+Kernel executable memory footprint: 20KB
 memory management: best_fit_pmm_manager
 physcial memory map:
   memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
 check_alloc_page() succeeded!
-p1=0xffffffffc0347038, p2=0xffffffffc03470b8, p3=0xffffffffc0348038,p4=0xffffffffc0348438, p5=0xffffffffc0348838, p6=0xffffffffc0349038
-p1=0xffffffffc0347038, p2=0xffffffffc03470b8, p3=0xffffffffc0347138,p4=0xffffffffc0348438, p5=0xffffffffc0348838, p6=0xffffffffc0349038
-p1=0xffffffffc0347038, p2=0xffffffffc03470b8, p3=0xffffffffc0348038,p4=0xffffffffc0348438, p5=0xffffffffc0348838, p6=0xffffffffc0349038
-SLUB-only test done.
-satp virtual address: 0xffffffffc0205000
-satp physical address: 0x0000000080205000
+satp virtual address: 0xffffffffc0204000
+satp physical address: 0x0000000080204000

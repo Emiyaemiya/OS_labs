@@ -366,7 +366,7 @@ while ((le = list_next(le)) != &free_list) {
 
 ![alt text]({2DB1C77C-29C5-4D2C-9EF2-22B2B49B143A}.png)
 
-值得一提的是，我们的 `make grade` 中主要测试的是 `satp` 的绝对地址，当我们完成扩展练习后，`.data/.bss` 区里在页表前面又塞进了不少内容，导致我们的物理地址会向后偏移为 `0x80205000` ，继而虚拟地址也会偏移 `0x1000` ，所以我们的 `make grade` 测试应该去掉扩展练习添加内容才能正确执行。
+值得一提的是，我们的 `make grade` 中主要测试的是 `satp` 的绝对地址，当我们完成扩展练习后，`.text` 区里在页表前面又塞进了不少内容，完成扩展练习一后，可能由于占据的尚不足一个，物理地址尚未偏移，直至加入slub，我们的物理地址会向后偏移为 `0x80205000` ，继而虚拟地址也会偏移 `0x1000` ，所以我们的 `make grade` 测试应该去掉扩展练习添加内容才能正确执行。同时我们的的slub也是基于偏移后的内容进行的样例添加和测试。
 
 ### 扩展练习一：Buddy System 分配算法
 
@@ -376,7 +376,7 @@ while ((le = list_next(le)) != &free_list) {
 
 **1. 结构设计**
 
-首先设定 `MAX_ORDER` ，我们可以通过直接输出函数 `buddy_init_memmap` 的参数 `n` 来获取最大空闲页数量，可知结果为31929，我们知道2^14是小于该数的最大的2的n次幂，所以我们可以将 `MAX_ORDER` 定为15。
+首先设定 `MAX_ORDER` ，我们可以通过直接输出函数 `buddy_init_memmap` 的参数 `n` 来获取最大空闲页数量，可知结果为31930，我们知道2^14是小于该数的最大的2的n次幂，所以我们可以将 `MAX_ORDER` 定为15。
 
 ```c
 #define MAX_ORDER 15
@@ -607,26 +607,26 @@ buddy_free_pages(struct Page *base, size_t n) {
 ```
 ------ Buddy System Free Page Dump ------
 Order 14 (size 16384), 1 blocks:
-  - Block at physical address 0x0000000080347000 (page index 839)
+  - Block at physical address 0x0000000080346000 (page index 838)
 Order 13 (size 8192), 1 blocks:
-  - Block at physical address 0x0000000084347000 (page index 17223)
+  - Block at physical address 0x0000000084346000 (page index 17222)
 Order 12 (size 4096), 1 blocks:
-  - Block at physical address 0x0000000086347000 (page index 25415)
+  - Block at physical address 0x0000000086346000 (page index 25414)
 Order 11 (size 2048), 1 blocks:
-  - Block at physical address 0x0000000087347000 (page index 29511)
+  - Block at physical address 0x0000000087346000 (page index 29510)
 Order 10 (size 1024), 1 blocks:
-  - Block at physical address 0x0000000087b47000 (page index 31559)
+  - Block at physical address 0x0000000087b46000 (page index 31558)
 Order 7 (size 128), 1 blocks:
-  - Block at physical address 0x0000000087f47000 (page index 32583)
+  - Block at physical address 0x0000000087f46000 (page index 32582)
 Order 5 (size 32), 1 blocks:
-  - Block at physical address 0x0000000087fc7000 (page index 32711)
+  - Block at physical address 0x0000000087fc6000 (page index 32710)
 Order 4 (size 16), 1 blocks:
-  - Block at physical address 0x0000000087fe7000 (page index 32743)
+  - Block at physical address 0x0000000087fe6000 (page index 32742)
 Order 3 (size 8), 1 blocks:
-  - Block at physical address 0x0000000087ff7000 (page index 32759)
-Order 0 (size 1), 1 blocks:
-  - Block at physical address 0x0000000087fff000 (page index 32767)
-Total free pages: 31929
+  - Block at physical address 0x0000000087ff6000 (page index 32758)
+Order 1 (size 2), 1 blocks:
+  - Block at physical address 0x0000000087ffe000 (page index 32766)
+Total free pages: 31930
 ```
 
 可以看到完全按照我们的思路，从空闲块在内存地址上从大到小排列。
