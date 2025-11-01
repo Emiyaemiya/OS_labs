@@ -8,7 +8,7 @@
 #include <riscv.h>
 #include <stdio.h>
 #include <trap.h>
-
+#include <string.h>
 #include "../libs/sbi.h"
 
 
@@ -204,7 +204,8 @@ void exception_handler(struct trapframe *tf) {
              *(3)更新 tf->epc寄存器
             */
             cprintf("Breakpoint at sepc=%p\n", tf->epc);
-            tf->epc += insn_len(tf->epc);
+            tf->epc += 4;
+            
             break;
         case CAUSE_MISALIGNED_LOAD:
             break;
