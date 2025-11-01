@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <trap.h>
 
+#include "../libs/sbi.h"
+
+
 #define TICK_NUM 100
 
 static void print_ticks() {
@@ -101,6 +104,8 @@ void print_regs(struct pushregs *gpr) {
 }
 
 void interrupt_handler(struct trapframe *tf) {
+    static int ticks = 0;
+    static int print_num = 0;
     intptr_t cause = (tf->cause << 1) >> 1;
     switch (cause) {
         case IRQ_U_SOFT:
@@ -124,12 +129,22 @@ void interrupt_handler(struct trapframe *tf) {
             // In fact, Call sbi_set_timer will clear STIP, or you can clear it
             // directly.
             // cprintf("Supervisor timer interrupt\n");
-             /* LAB3 EXERCISE1   YOUR CODE :  */
+            /* LAB3 EXERCISE1   YOUR CODE :  */
             /*(1)设置下次时钟中断- clock_set_next_event()
              *(2)计数器（ticks）加一
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
             * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
             */
+            clock_set_next_event();
+            ticks++;
+            if (ticks % TICK_NUM == 0) {
+                print_ticks();
+                print_num++;
+                if (print_num == 10) {
+                    sbi_shutdown();
+                }
+            }
+            
             break;
         case IRQ_H_TIMER:
             cprintf("Hypervisor software interrupt\n");
@@ -155,6 +170,15 @@ void interrupt_handler(struct trapframe *tf) {
     }
 }
 
+static inline int insn_len(uintptr_t epc) {
+    // RISC-V: if low 2 bits != 0b 11, it's a 16-bit compressed instruction
+    // challenge3 的核心修改部分，触发指令（ebreak、明确的非法 .4byte 或者汇编器生成的非法）在 RISC‑V 开了压缩指令（RVC）时，常常是 16 位的编码（比如 C.EBREAK，长度 2 字节）。如果异常处理里一律 tf->epc += 4，就会把返回地址推进到“错误的边界”：要么跳过了下一条 16 位指令，要么直接落到“某条指令的中间”。
+    //RISC‑V 指令按“Quadrant（四分象限）”编码：16 位压缩指令的最低两位属于 Q0/Q1/Q2，均不等于 0b11。32 位标准指令的最低两位固定是 0b11（即 Q3）。硬件取指就是用这两位来区分 16/32 位长度的，所以我们在软件里用同样的判据推进 sepc 是最稳妥的。
+    uint16_t half;
+    memcpy(&half, (void *)epc, sizeof(half));
+    return (half & 0x3) != 0x3 ? 2 : 4;
+}
+
 void exception_handler(struct trapframe *tf) {
     switch (tf->cause) {
         case CAUSE_MISALIGNED_FETCH:
@@ -163,28 +187,35 @@ void exception_handler(struct trapframe *tf) {
             break;
         case CAUSE_ILLEGAL_INSTRUCTION:
              // 非法指令异常处理
-             /* LAB3 CHALLENGE3   YOUR CODE :  */
+             /* LAB3 CHALLENGE3   2312372 :  */
             /*(1)输出指令异常类型（ Illegal instruction）
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
+            // 避免递归打印，这里只打印一行简讯
+            cprintf("Illegal instruction at sepc=%p\n", tf->epc);
+            tf->epc += insn_len(tf->epc);
             break;
         case CAUSE_BREAKPOINT:
             //断点异常处理
-            /* LAB3 CHALLLENGE3   YOUR CODE :  */
+            /* LAB3 CHALLENGE3   2312372 :  */
             /*(1)输出指令异常类型（ breakpoint）
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
+            cprintf("Breakpoint at sepc=%p\n", tf->epc);
+            tf->epc += insn_len(tf->epc);
             break;
         case CAUSE_MISALIGNED_LOAD:
             break;
         case CAUSE_FAULT_LOAD:
-            break;
+            cprintf("Load page fault: sepc=%p stval=%p\n", tf->epc, tf->badvaddr);
+            panic("kernel load fault");
         case CAUSE_MISALIGNED_STORE:
             break;
         case CAUSE_FAULT_STORE:
-            break;
+            cprintf("Store page fault: sepc=%p stval=%p\n", tf->epc, tf->badvaddr);
+            panic("kernel store fault");
         case CAUSE_USER_ECALL:
             break;
         case CAUSE_SUPERVISOR_ECALL:

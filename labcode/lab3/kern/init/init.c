@@ -31,13 +31,14 @@ int kern_init(void) {
     pmm_init();  // init physical memory management
 
     idt_init();  // init interrupt descriptor table
-
     clock_init();   // init clock interrupt
     intr_enable();  // enable irq interrupt
-
     /* do nothing */
+    asm volatile("ebreak");            // 触发 breakpoint 异常
+    asm volatile(".4byte 0xffffffff"); // 明确的非法 32 位指令，触发 illegal instruction
+    
     while (1)
-        ;
+    ;
 }
 
 void __attribute__((noinline))
