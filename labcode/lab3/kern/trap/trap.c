@@ -204,7 +204,7 @@ void exception_handler(struct trapframe *tf) {
              *(3)更新 tf->epc寄存器
             */
             cprintf("Breakpoint at sepc=%p\n", tf->epc);
-            tf->epc += 4;
+            tf->epc += insn_len(tf->epc);
             
             break;
         case CAUSE_MISALIGNED_LOAD:
