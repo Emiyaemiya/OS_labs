@@ -36,7 +36,6 @@ int kern_init(void) {
     /* do nothing */
     asm volatile("ebreak");            // 触发 breakpoint 异常
     asm volatile(".4byte 0xffffffff"); // 明确的非法 32 位指令，触发 illegal instruction
-    
     while (1)
     ;
 }
