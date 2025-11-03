@@ -129,7 +129,7 @@ void interrupt_handler(struct trapframe *tf) {
             // In fact, Call sbi_set_timer will clear STIP, or you can clear it
             // directly.
             // cprintf("Supervisor timer interrupt\n");
-            /* LAB3 EXERCISE1   YOUR CODE :  */
+            /* LAB3 EXERCISE1   2312707 :  */
             /*(1)设置下次时钟中断- clock_set_next_event()
              *(2)计数器（ticks）加一
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
@@ -195,7 +195,8 @@ void exception_handler(struct trapframe *tf) {
              *(3)更新 tf->epc寄存器
             */
             // 避免递归打印，这里只打印一行简讯
-            cprintf("Illegal instruction at sepc=%p\n", tf->epc);
+            cprintf("Illegal instruction at %p\n", tf->epc);
+            cprintf("Exception type:Illegal instruction\n");
             tf->epc += insn_len(tf->epc);
             break;
         case CAUSE_BREAKPOINT:
@@ -205,7 +206,8 @@ void exception_handler(struct trapframe *tf) {
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
-            cprintf("Breakpoint at sepc=%p\n", tf->epc);
+            cprintf("ebreak at =%p\n", tf->epc);
+            cprintf("Exception type:breakpoint\n");
             tf->epc += insn_len(tf->epc);
             
             break;
