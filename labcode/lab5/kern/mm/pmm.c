@@ -401,8 +401,10 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
             struct Page *page = pte2page(*ptep);
             int ret = 0;
             if (share) {
-                perm = (perm & ~PTE_W) | PTE_COW;
-                page_insert(from, page, start, perm);
+                if (perm & PTE_W) {
+                    perm = (perm & ~PTE_W) | PTE_COW;
+                    page_insert(from, page, start, perm);
+                }
                 ret = page_insert(to, page, start, perm);
             } else {
                 // alloc a page for process B
