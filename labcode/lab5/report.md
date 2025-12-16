@@ -282,6 +282,11 @@ RUNNING ----------------> ZOMBIE ------------> DEAD
    }
 ```
 
+解释一下我们实现的COW机制：
+1.  在 `do_pgfault` 中，如果发现页表项的 `PTE_COW` 标志位被设置，说明该页是 COW 页面。
+2.  如果引用计数大于 1，说明有其他进程共享该页，我们分配一个新的物理页，并将原页的内容拷贝到新页，然后建立新的页表项。可以看到我们的操作并没有清除 `PTE_COW` 标志位，这是因为我们并不需要修改多个进程指向的那个物理页，只需要将目前写的那个进程重新分配一个新的物理页即可。同时，ucore代码框架中，在`page_insert()`函数中会进行判断，如果新页与旧页不同，会调用`page_remove_pte()`函数，这里会进行引用计数的更新。
+3.  如果引用计数等于 1，说明只有当前进程在使用该页，我们直接恢复 `PTE_W` 标志位，清除 `PTE_COW` 标志位，刷新 TLB。
+
 **注意**：在 `do_pgfault` 中，必须根据 `vma->vm_flags` 正确设置 `perm`。如果忽略了 `VM_EXEC` 到 `PTE_X` 的映射，那么当程序尝试执行该页面上的指令时，会再次触发 Instruction Page Fault，导致死循环。这是 Lab 5 中容易被忽视的一个细节。
 
 ### 2. Dirty COW 漏洞分析
@@ -304,3 +309,358 @@ RUNNING ----------------> ZOMBIE ------------> DEAD
 
 3.  **原因**：
     这是为了简化实验难度。在 Lab 5 阶段，我们主要关注进程管理和虚拟内存，尚未实现完善的文件系统（这是 Lab 8 的内容）。将程序直接链接进内核可以避免处理复杂的磁盘 I/O 和文件系统接口。
+
+
+## gdb 调试页表查询过程
+
+### QEMU 内存访问与地址翻译分析
+
+为了进一步探究 QEMU 是如何模拟 RISC-V 的 MMU（内存管理单元）功能的，我们尝试追踪了一次内存访问指令（如 `ld`）在 QEMU 源码中的执行路径，观察虚拟地址是如何被翻译为物理地址的。
+
+#### 关键调用路径
+
+当 Guest OS (ucore) 执行一条访存指令时，如果发生了 TLB Miss（或者在 SoftMMU 模式下），QEMU 会触发一系列函数调用来完成地址翻译。核心路径如下：
+
+1.  **`tlb_fill`**: 当 TCG 生成的代码尝试访问内存但 TLB 中没有缓存该页面的映射时，会调用此函数。
+2.  **`riscv_cpu_tlb_fill`**: RISC-V 架构特定的 TLB 填充函数。它负责调用底层的翻译逻辑，并根据翻译结果填充 QEMU 的软件 TLB 或触发异常（如 Page Fault）。
+3.  **`get_physical_address`**: **这是核心函数**。它模拟了硬件 Page Walker 的行为，遍历页表以查找虚拟地址对应的物理地址。
+
+#### `get_physical_address` 的关键逻辑
+
+在 `target/riscv/cpu_helper.c` 中，`get_physical_address` 函数包含了页表遍历的具体实现。关键的分支语句包括：
+
+*   **模式检查**:
+    ```c
+    if (mode == PRV_M && access_type != MMU_INST_FETCH) {
+        // M 模式下通常直接使用物理地址（除非配置了 PMP 等）
+        ...
+    }
+    ```
+*   **Sv32/Sv39/Sv48 分支**:
+    根据 `env->satp` (Supervisor Address Translation and Protection) 寄存器的模式字段，决定使用哪种页表格式。
+    ```c
+    switch (mode) {
+    case VM_1_10_SV32:
+        levels = 2; ptidxbits = 10; ptesize = 4; break;
+    case VM_1_10_SV39:
+        levels = 3; ptidxbits = 9; ptesize = 8; break;
+    ...
+    }
+    ```
+*   **页表遍历循环**:
+    ```c
+    for (i = 0; i < levels; i++) {
+        // 1. 从物理内存读取 PTE (Page Table Entry)
+        // 2. 检查 PTE 有效位 (PTE_V) 和权限位 (PTE_R/W/X)
+        // 3. 如果是叶子节点，计算最终物理地址并退出
+        // 4. 如果是中间节点，更新基址继续下一级查找
+    }
+    ```
+
+#### 调试演示：虚拟地址到物理地址的翻译
+
+为了验证这一过程，我们在 QEMU GDB (Terminal 2) 中对 `get_physical_address` 打断点，并观察一次 `ld` 指令的执行。
+
+
+```gdb
+b get_physical_address
+```
+
+通过 `n` (next) 指令，我们进行了下面的分析。
+
+#### 调试实录：`get_physical_address` 参数分析
+
+在调试过程中，我们捕获到了如下的断点信息：
+
+```text
+Thread 1 "qemu-system-ris" hit Breakpoint 2, get_physical_address (env=0x563021859690, 
+    physical=0x7ffdbd3959a0, prot=0x56302175ca50, 
+    addr=94764070734290, access_type=22063, 
+    mmu_idx=-87684712)
+    at /mnt/f/OOOOOOSSSSSSS/qemu-4.1.1/target/riscv/cpu_helper.c:158
+```
+
+**参数解读**：
+*   **`env`**: 指向当前 CPU 状态的指针，包含了 `satp` 等关键寄存器。
+*   **`addr`**: `94764070734290` (即十六进制 `0x5630218599D2`)。这是 CPU 想要访问的**虚拟地址**。
+*   **`access_type`**: 指示访问类型（读、写或取指）。
+*   **`mmu_idx`**: 指示当前的 MMU 模式（例如 User Mode 或 Supervisor Mode）。
+
+#### 调试实录：Sv39 页表转换过程分析
+
+经过跟大模型的交互，我发现前面进行的捕获并不是一个期望的捕获，这是一个没有进入 `ucore` 的调用，并不是我们想分析的，于是我尝试使用
+
+```
+b do_execve
+```
+直接进入用户态访问，之后再打入 `get_physical_address`，获取到了一个理想的内存访问
+
+我们成功捕获了一次开启了分页模式（Sv39）的内存访问。这次调试展示了完整的页表翻译流程，比之前的 Bare Mode 更有代表性。
+
+![get_physical_address_sv39_1](address1.png)
+![get_physical_address_sv39_2](address2.png)
+![get_physical_address_sv39_3](address3.png)
+
+**1. 初始化与模式识别**
+```c
+184             base = get_field(env->satp, SATP_PPN) << PGSHIFT;
+186             vm = get_field(env->satp, SATP_MODE);
+191               levels = 3; ptidxbits = 9; ptesize = 8; break;
+```
+*   **`base`**: 从 `satp` 寄存器获取根页表的物理基地址。
+*   **`levels = 3`**: 代码识别出 `satp` 的模式为 Sv39，因此设置 `levels = 3`，表示三级页表。
+
+**2. 页表遍历 (Page Walk)**
+```c
+237         for (i = 0; i < levels; i++, ptshift -= ptidxbits) {
+238             target_ulong idx = (addr >> (PGSHIFT + ptshift)) & ((1 << ptidxbits) - 1);
+242             target_ulong pte_addr = base + idx * ptesize;
+252             target_ulong pte = ldq_phys(cs->as, pte_addr);
+```
+*   **`idx`**: 从虚拟地址 `addr` 中提取当前级页表的索引（VPN）。
+*   **`pte_addr`**: 计算页表项 (PTE) 的物理地址。
+*   **`ldq_phys`**: 模拟硬件访问物理内存，读取 PTE。这是 QEMU 模拟 MMU 的核心动作。
+
+**3. PTE 有效性与权限检查**
+```c
+256             if (!(pte & PTE_V)) { ... }
+259             } else if (!(pte & (PTE_R | PTE_W | PTE_X))) { ... }
+```
+*   **256行**: 检查 PTE 的 V 位（Valid）。如果无效，将触发 Page Fault。
+*   **259行**: 检查 R/W/X 位。
+    *   如果 `R=0, W=0, X=0`，表示这是指向下一级页表的指针（非叶子节点），循环将继续。
+    *   如果任一位为 1，表示这是叶子节点（物理页），循环将结束，进入物理地址计算。
+*   在本次调试中，代码跳过了 259 行的 `if` 块，说明找到了叶子节点。
+
+**4. 物理地址生成与权限设置**
+```c
+334                 *physical = (ppn | (vpn & ((1L << ptshift) - 1))) << PGSHIFT;
+337                 if ((pte & PTE_R) || ((pte & PTE_X) && mxr)) {
+338                     *prot |= PAGE_READ;
+...
+349                 return TRANSLATE_SUCCESS;
+```
+*   `physical`: 将 PTE 中的 PPN（物理页号）与虚拟地址中的页内偏移组合，生成最终的物理地址。
+*   `prot`:根据 PTE 的权限位设置 QEMU 的内部权限标志（PAGE_READ/WRITE/EXEC）。
+*   `TRANSLATE_SUCCESS`: 翻译成功，CPU 可以继续访问内存。
+
+这次调试完美展示了 Sv39 分页机制在 QEMU 源码层面的实现：从 `satp` 读取根节点，逐级查找 PTE，最后拼接物理地址。
+
+#### 深入探究：QEMU 的软件 TLB 机制
+
+为了更深入地理解 QEMU 的内存模拟机制，我们探究了 QEMU 是如何模拟 TLB (Translation Lookaside Buffer) 的。
+
+**1. QEMU TLB 的实现位置**
+通过源码搜索，我们发现 QEMU 的 TLB 模拟逻辑主要位于 `accel/tcg/cputlb.c` 文件中。虽然 QEMU 为了性能会将 TLB 查找编译为宿主机汇编指令（TCG Fast Path），但在 TLB Miss 时，会回退到 C 语言实现的 Slow Path，即 `tlb_fill` 函数。
+
+**2. 调试对比：Bare Mode 下的 TLB 行为**
+我们设计了一个实验来验证 QEMU 软件 TLB 与真实硬件 TLB 的区别。
+*   **真实硬件**：在 Bare Mode (MMU 关闭) 下，CPU 通常会旁路 (Bypass) TLB，直接访问物理地址。
+*   **QEMU 模拟**：我们重启 QEMU（处于 Bare Mode），并拦截 `riscv_cpu_tlb_fill` 函数。
+
+**调试日志分析**：
+![tlb_fill_bare_mode](qemu_tlb.png)
+
+
+**现象解读**：
+1.  即使在 Bare Mode 下，QEMU 依然调用了 `riscv_cpu_tlb_fill`。
+2.  `get_physical_address` 返回了 `TRANSLATE_SUCCESS`（此时执行的是直通映射逻辑，`pa = address`）。
+3.  关键在于 **Line 472 `tlb_set_page`**：QEMU 将这个“虚拟地址 = 物理地址”的映射关系也填入了软件 TLB 中。
+
+**3. 调试对比：Sv39 Mode 下的 TLB 行为**
+为了形成对比，我们让 ucore 运行至用户态（开启 Sv39 分页），依旧使用和刚刚类似的trick
+```
+b  do_execve
+```
+再次拦截 `riscv_cpu_tlb_fill`。
+
+**调试日志分析**：
+![tlb_fill_sv39_mode](user_tlb_1.png)
+
+
+
+**现象解读**：
+1.  **流程一致性**：即使在开启分页的 Sv39 模式下，QEMU 的处理流程与 Bare Mode **惊人地一致**。
+2.  **差异点**：唯一的区别在于 `get_physical_address` 内部。在 Sv39 模式下，该函数执行了复杂的页表遍历（如 4.5 节所示），计算出了物理地址 `pa`。
+3.  **殊途同归**：无论物理地址是如何计算出来的（直通还是查表），最终都会通过 `tlb_set_page` 填入软件 TLB。
+
+**4. 总结：QEMU 的 TLB 设计哲学**
+通过这两次调试对比，我们深刻理解了 QEMU 的设计：
+*   **统一的缓存机制**：QEMU 不区分“直通”还是“映射”，它将所有地址转换结果都视为 TLB 表项。
+*   **性能优化**：这种设计使得 TCG 生成的代码（Fast Path）只需要查找 TLB 即可，无需关心当前的 MMU 模式。只有当 TLB Miss 时，才进入 Slow Path (`tlb_fill`) 去处理具体的硬件细节（Bare/Sv39/Sv48 等）。
+*   **软硬差异**：这与真实硬件有本质不同。真实硬件在 Bare Mode 下没有 TLB 参与，而在 QEMU 中，TLB 是模拟内存访问的基石。
+
+#### 抓马细节、大模型交互与知识获取
+
+主要遇到的问题就是在进行内存转换分析的时候，简单的使用 `b get_physical_address` 并不能得到一个期望的结果，而未进入 `ucore` 前我不可能一个一个的通过 `c` 去找到对应结果，一方面前面对应断点太多，另一方面我也难以确定何时正式进入，通过询问大模型，他给我提供了一个小trick，通过直接给用户态的进入打点，直接进入具体的 `sv39` 的分页分析，这让我受益匪浅，为我使用gdb调试提供了很好的思路与学习方向。 
+
+
+## gdb 调试系统调用以及返回
+
+为了深入理解 RISC-V 硬件如何处理特权级切换，我们使用 Dual-GDB（一个 GDB 调试 QEMU 自身，另一个 GDB 调试 ucore 内核）观察了 `ecall` 与 `sret` 指令在 QEMU 源码层面的执行过程。
+
+### 1. ecall 指令的处理 (User -> Kernel)
+
+我们首先需要在终端3使用如下语句：
+
+```
+add-symbol-file obj/__user_exit.out
+break user/libs/syscall.c:18
+```
+
+
+**解释**：
+*   `add-symbol-file obj/__user_exit.out`：让 GDB 加载用户程序 `exit` 的符号表。因为 GDB 启动时默认只加载了内核符号，不加载此文件就无法在用户代码中打断点。
+*   `break user/libs/syscall.c:18`：在用户库函数 `syscall` 的第 18 行打断点。这一行正是执行 `ecall` 指令的位置，在此处暂停可以让我们观察从用户态进入内核态前的 CPU 状态。
+
+**源码分析 (`user/libs/syscall.c`)**:
+```c
+// user/libs/syscall.c
+asm volatile (
+    "ld a0, %1\n"  // 加载系统调用号
+    "ld a1, %2\n"  // 加载参数
+    ...
+    "ecall\n"      // <--- 触发同步异常，陷入内核
+    ...
+);
+```
+
+现在只是进入内联汇编部分，前面还有好多句ld指令，我们通过输入`si`来直接找到对应的部分，输入：
+
+```
+x/7i $pc
+```
+得到如下结果：
+![alt text](ecall.png)
+
+通过询问大模型，我知道了，当用户程序执行 `ecall` 指令发起系统调用时，QEMU 的 `riscv_cpu_do_interrupt` 函数被触发，故在终端2上，使用如下语句打上断点。
+
+```
+b riscv_cpu_do_interrupt
+```
+
+之后我们输入n逐步观察代码如下：
+![alt text](cpudointerrupt1.png)
+![alt text](cpudointerrupt2.png)
+
+这就是整个riscv_cpu_do_interrupt的流程。
+
+
+**关键代码分析 (`target/riscv/cpu_helper.c`)**:
+```c
+// 1. 确认异常原因
+if (cause == RISC_EXCP_U_ECALL) {
+    // 2. 委托检查 (Delegation)
+    // 检查该异常是否被委托给 S 模式处理 (medeleg 寄存器)
+    // 如果没有委托，则由 M 模式处理；如果委托了，则由 S 模式处理
+}
+
+// 3. 状态保存与切换
+if (env->priv <= PRV_S && cause < TARGET_LONG_BITS && ((deleg >> cause) & 1)) {
+    // 处理委托给 S 模式的异常
+    target_ulong s = env->mstatus;
+    // 保存当前中断使能状态 (SIE -> SPIE)
+    s = set_field(s, MSTATUS_SPIE, env->priv_ver >= PRIV_VERSION_1_10_0 ? 
+        get_field(s, MSTATUS_SIE) : get_field(s, MSTATUS_UIE << env->priv));
+    // 保存当前特权级 (Privilege -> SPP)
+    s = set_field(s, MSTATUS_SPP, env->priv);
+    // 关闭中断 (SIE = 0)
+    s = set_field(s, MSTATUS_SIE, 0);
+    env->mstatus = s;
+    
+    // 保存异常 PC 到 sepc
+    env->sepc = env->pc;
+    // 保存异常原因到 scause
+    env->scause = cause | ((target_ulong)async << (TARGET_LONG_BITS - 1));
+    // 切换 PC 到 stvec (内核中断入口)
+    env->pc = (env->stvec >> 2 << 2) + ((async && (env->stvec & 3) == 1) ? cause * 4 : 0);
+    // 切换特权级到 Supervisor Mode
+
+
+    riscv_cpu_set_mode(env, PRV_S);
+}
+```
+
+在gdb调试中，我们看到了 QEMU 处理异常的现场。结合 `target/riscv/cpu_helper.c` 的源码，可以清晰地看到硬件（模拟器）是如何一步步“伪造”出中断现场的：
+1.  **委托机制 (Delegation)**：代码中的 `if (env->priv <= PRV_S ...)` 判断逻辑，实际上是在模拟硬件检查 `medeleg` 寄存器。因为 `ecall` 是用户态发起的，通常被委托给 S 模式处理。这解释了为什么我们在 ucore 中能捕获到这个异常，而不是直接被 M 模式的 OpenSBI 拦截。
+2.  **上下文保存 (Context Saving)**：截图中的 `env->sepc = env->pc` 和 `env->scause = cause ...` 对应了硬件自动保存 PC 和 Cause 的动作。在真实的硬件电路中，这是通过寄存器之间的连线在时钟沿完成的；而在 QEMU 中，这仅仅是结构体成员变量的赋值。这让我对“软件定义硬件”有了具象的理解。
+3.  **模式切换 (Mode Switch)**：`riscv_cpu_set_mode(env, PRV_S)` 这一行代码模拟了 CPU 特权级从 User Mode 跃迁到 Supervisor Mode 的瞬间。同时 `env->pc` 被修改为 `stvec`（中断向量表地址），这正是我们在 ucore 中看到的 `trap_entry` 的入口。
+
+### 2. sret 指令的处理 (Kernel -> User)
+
+当内核完成系统调用处理后，执行 `sret` 指令返回用户态。询问大模型后我知道了，QEMU 的 `helper_sret` 函数负责模拟这一过程，跟前面进本相同的流程，使用：
+```
+b helper_sret
+```
+打上断点后，输入 `c` 跳过已经分析的 `riscv_cpu_do_interrup` ，找到对应的 `helper_sret`，如下：
+
+
+![sret debug](helper_sret.png)
+
+**关键代码分析 (`target/riscv/op_helper.c`)**:
+```c
+target_ulong helper_sret(CPURISCVState *env, target_ulong cpu_pc_deb) {
+    // 1. 准备返回地址
+    // 从 sepc 寄存器读取返回地址
+    target_ulong retpc = env->sepc;
+
+    // 2. 获取目标特权级
+    // 读取 mstatus 的 SPP 位 (Supervisor Previous Privilege)
+    // 因为是从用户态进入的，SPP 此时应为 0 (User Mode)
+    target_ulong mstatus = env->mstatus;
+    target_ulong prev_priv = get_field(mstatus, MSTATUS_SPP);
+
+    // 3. 恢复中断状态
+    // 将 SPIE 的值恢复给 SIE (恢复中断使能)
+    mstatus = set_field(mstatus, MSTATUS_SIE, get_field(mstatus, MSTATUS_SPIE));
+    // 将 SPIE 置 1 (或保留，取决于版本)
+    mstatus = set_field(mstatus, MSTATUS_SPIE, 1);
+    // 将 SPP 重置为 User Mode (为下一次 trap 做准备)
+    mstatus = set_field(mstatus, MSTATUS_SPP, PRV_U);
+    
+    // 4. 特权级切换
+    // 将 CPU 当前模式设置为 prev_priv (即 User Mode)
+    riscv_cpu_set_mode(env, prev_priv);
+    
+    // 更新 mstatus
+    env->mstatus = mstatus;
+
+    // 5. 跳转
+    // 返回 retpc，CPU 下一条指令将从这里开始执行
+    return retpc;
+}
+```
+
+
+在gdb调试中，我们观察到了从内核态返回用户态的过程。结合 `target/riscv/op_helper.c`，这个过程是 `ecall` 的完美逆过程：
+1.  **恢复 PC**：`target_ulong retpc = env->sepc`。硬件直接从 `sepc` 寄存器读取返回地址。这意味着如果内核在处理中断时修改了 `sepc`（例如信号处理），程序就会跳转到新的位置，而不是原来的位置。
+2.  **特权级降级**：`riscv_cpu_set_mode(env, prev_priv)`。这里的 `prev_priv` 来自 `mstatus.SPP`。因为我们是从用户态进来的，`SPP` 被保存为 User Mode，所以这里会正确地切回用户态。
+3.  **原子性**：在源码中，这些操作是顺序执行的 C 语句。但在真实硬件中，`sret` 是一条原子指令，所有状态更新（PC, Mode, Interrupt Enable）是在同一个时钟周期内完成的，不会被中断打断。QEMU 通过 TCG 辅助函数保证了这种逻辑上的原子性。
+
+
+
+### 3. 总结与思考
+通过这次调试，我们验证了 RISC-V 硬件（由 QEMU 模拟）在特权级切换时的核心行为：
+*   **进入内核**：硬件自动保存 PC 到 `sepc`，保存 Cause 到 `scause`，更新 `mstatus` (保存中断状态和特权级)，并跳转到 `stvec`。
+*   **返回用户**：硬件根据 `mstatus.SPP` 恢复特权级，根据 `mstatus.SPIE` 恢复中断，并跳转回 `sepc`。
+这一过程保证了操作系统能够安全地接管和恢复用户程序的执行。
+
+**关于 TCG Translation 的思考**：
+
+在调试过程中，我了解到 QEMU 执行 `ecall` 和 `sret` 并不是直接“执行”这些指令，而是通过 **TCG (Tiny Code Generator)** 将 RISC-V 的指令翻译成宿主机（我的电脑，x86架构）的指令。
+*   `helper_sret` 这种函数其实就是 TCG 在翻译过程中插入的“助手函数”。当 TCG 遇到复杂的 RISC-V 指令（如涉及特权级切换的 `sret`）时，它不会直接生成对应的 x86 指令，而是生成一个调用 `helper_sret` 的函数调用。
+*   这解释了为什么我们可以在 C 语言级别的 `helper_sret` 函数中打断点——因为 QEMU 在模拟执行时，实际上是在运行这段 C 代码编译出来的 x86 指令。
+*   这也让我联想到另一个双重 GDB 调试实验（调试 bootloader），那里可能也涉及到了类似的机制：通过调试 QEMU 自身的代码，来观察它如何加载和跳转到 bootloader 的入口。
+
+**抓马细节与知识获取**：
+
+最抓马的就是现场演示的部分，一方面，为了防止 `make grade` 的结果不对，我把 `qemu` 的路径改成了默认路径（实际上似乎使用调试版本的qemu也没什么问题），由于我的疏忽没有第一时间改回来，这导致我在现场演示的时候浪费大量时间，另一方面，就是我在现场的时候由于想测试 `cow` 的实现情况，我把测试的用户程序改了，导致我使用 `add-symbol-file obj/__user_exit.out` 完全没有效果，因为这条指令加载的是用户程序 `exit` 而不是 `cow`。由于我的紧张、粗心大意以及对gdb调试的不熟练，导致没有在现场显示出来，给助教带来不便，真的是红豆泥私密马赛😭😭。
+
+**与大模型的交互记录**：
+
+在实验过程中，我遇到了不少困难，比如不知道 `ecall` 对应的 QEMU 函数名是什么我问大模型“ecall 指令在 QEMU 里对应哪个函数？”，它告诉我是 `riscv_cpu_do_interrupt`，并解释了这是处理异常的通用入口，`helper_sret` 也是类似的情况。
+
+*   **思路**：在大模型的引导下，我建立起了“双重调试”的概念模型——一边看 Guest OS 的逻辑（ucore 怎么处理 syscall），一边看 Host Emulator 的逻辑（QEMU 怎么模拟硬件行为）。这种视角非常独特，让我对软硬件接口有了更直观的认识。
+
+
+
