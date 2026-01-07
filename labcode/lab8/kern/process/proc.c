@@ -271,6 +271,8 @@ void proc_run(struct proc_struct *proc)
         {
             current = proc;
             lsatp(next->pgdir);
+            // LAB8: 切换页表后刷新 TLB，清除旧进程的地址映射缓存
+            flush_tlb();
             switch_to(&(prev->context), &(next->context));
         }
         local_intr_restore(intr_flag);
